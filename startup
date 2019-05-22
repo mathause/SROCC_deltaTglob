@@ -1,0 +1,43 @@
+#!/bin/bash
+
+if [ "$0" = "$BASH_SOURCE" ] && [ "$1" != "n" ] ; then
+echo USAGE
+
+echo "source the file as '. ./startup' to load the conda environment"
+echo ""
+echo "run as './startup n' to start jupyter notebook" 
+
+exit 1
+fi
+
+if [[ "$HOSTNAME" == budyko ]]; then
+	echo ""
+	echo ""
+	echo "================================================================================="
+        echo "================================================================================="
+	echo " HOST: budyko "
+        echo "================================================================================="
+        echo "================================================================================="
+	echo ""
+	echo ""
+fi
+
+
+module load conda
+#export CONDA_ENVS_PATH=/net/exo/landclim/mathause/.conda/envs
+source activate ipcc_ar6
+
+
+echo "The following packages are in development mode:"
+conda list | grep '<develop>' | awk '{print $1}'
+
+if [ "$1" = "n" ]; then
+  jupyter notebook --browser=chromium
+else
+  echo ''
+  #echo "startup n to start jupyter notebook"
+fi
+
+
+
+
