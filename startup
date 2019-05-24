@@ -25,7 +25,7 @@ fi
 
 module load conda
 #export CONDA_ENVS_PATH=/net/exo/landclim/mathause/.conda/envs
-source activate ipcc_ar6
+source activate iacpy3_2019
 
 
 echo "The following packages are in development mode:"
