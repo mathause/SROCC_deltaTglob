@@ -3,7 +3,7 @@
 if [ "$0" = "$BASH_SOURCE" ] && [ "$1" != "n" ] ; then
 echo USAGE
 
-echo "source the file as '. ./startup' to load the conda environment"
+echo "source the file as 'source startup' to load the conda environment"
 echo ""
 echo "run as './startup n' to start jupyter notebook" 
 
