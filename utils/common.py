@@ -15,6 +15,7 @@ def cos_wgt(obj, lat_name='lat'):
 
 
 def calc_anomaly(data, start, end):
+    """calculate reference anomaly wrt a reference period"""
 
     def _calc_anomaly(ds):
         mean = ds.sel(year=slice(start, end)).mean('year')
@@ -34,11 +35,11 @@ def calc_anomaly(data, start, end):
 
 class CMIP_ng:
     """class to read and postprocess cmipX-ng data for the SROCC report
-    
+
         For data access see https://data.iac.ethz.ch/atmos/
 
     """
-    def __init__(self, folder_root, scens, cmip, skips):
+    def __init__(self, folder_root, scens, cmip):
         """
         set paths etc for cmip3_ng and cmip5_ng
 
@@ -50,19 +51,14 @@ class CMIP_ng:
             List of all scenarios that are avaliable.
         cmip: 'cmip3' | 'cmip5'
             Indicates which cmip version we are using.
-        skips: list of models to skip
-            Indicate models to skip because they have errors.
-            Has the format ((scen, model, ens, reason), (...))
-
         """
         self.folder_root = folder_root
         self.scens = scens
         self.cmip = cmip
-        self.skips = skips
 
         # format of the files (it's the same for cmip3-ng and cmip5-ng)
         self.file_format = "{var}_{time}_{model}_{scen}_{ens}_{res}.nc"
-        
+
         self._tas_all_scens = None
 
     def filename(self, var, time, model, scen, ens, res='native'):
@@ -109,27 +105,27 @@ class CMIP_ng:
     def process_one_model(fN):
         """calculate global mean annual mean for one cmip5 model
         """
-        
+
         ds = xr.open_dataset(fN)
 
         # read model name and ensemble number
         model = [ds.attrs['source_model']]
         ens = [ds.attrs['source_ensemble']]
-        
+
         # assign info as coordinate
         ds = ds.assign_coords(model=model, ens=ens)
-        
+
         # get cosine-weighted latitude
         wgt = common.cos_wgt(ds)
-        
+
         # compute weighted global mean
         ds = xarray_utils.Weighted(ds, wgt).mean(('lat', 'lon'))
 
         # convert from time index to year index
         ds = ds.assign_coords(year=ds.year.dt.year)
-        
+
         ds = ds.set_index(model_ens=('model', 'ens'))
-        
+
         unique_years = np.unique(ds.year)
         if len(ds.year) != len(unique_years):
             msg = 'Removing duplicate years for {} {}'
@@ -139,7 +135,6 @@ class CMIP_ng:
             ds = ds.isel(year=index)
 
         return ds
-
 
     def get_name_postprocess(self, scen):
         """get the name for the postprocessed data"""
@@ -179,34 +174,16 @@ class CMIP_ng:
             all_data = list()
             for i, fN in enumerate(fNs):
                 ds = self.process_one_model(fN)
-                
+
                 model = ds.model
                 ens = ds.ens
-
-                # manually added (scen, model, ens, reason) to skip
-                skip_this = False
-                for skip in self.skips:
-                    if (scen, model, ens) == skip[:3]:
-                        msg = '-- skipping {}, {}, {}, because: {}'
-                        print(msg.format(*skip))
-                        skip_this = True
-
-                if skip_this:
-                    continue
-
                 all_data.append(ds)
-                
+
                 print("File {: 2d} of {:02d}".format(i + 1, len(fNs)))
 
-
             # concatenate the data
-            try:
-                ds = xr.concat(all_data, dim='model_ens')
-            except ValueError as e:
-                # return data so we can have a look
-                return all_data
+            ds = xr.concat(all_data, dim='model_ens')
 
-            
             # enumerate the ensemble members, because not always r1i1p1 is the
             # first
             ens_number = []
@@ -218,22 +195,23 @@ class CMIP_ng:
 
             # we need to get rid of the multiindex, as xarray cannot save it
             ds = ds.reset_index('model_ens')
-            
+
             # save to netcdf
             ds.to_netcdf(fN_out, format='NETCDF4_CLASSIC')
 
-
     def _get_tas(self, scen):
+        # get tas for one scenario
 
         fN = self.get_name_postprocess(scen)
 
         ds = xr.open_dataset(fN)
-        
+
         # create the multiindex again
         return ds.set_index(model_ens=('model', 'ens_number'))
 
     @property
     def tas_all_scens(self):
+        """get tas for all scenarios"""
 
         if self._tas_all_scens is None:
             dta = dict()
@@ -242,10 +220,5 @@ class CMIP_ng:
                 dta[scen] = self._get_tas(scen)
 
             self._tas_all_scens = dta
-        
+
         return self._tas_all_scens
-    
-
-
-    
-
