@@ -1,9 +1,11 @@
 import numpy as np
+import pandas as pd
+import re
+import xarray as xr
 
 from glob import glob
 from os import path
 
-import xarray as xr
 
 from . import common
 from . import xarray_utils
@@ -13,6 +15,8 @@ def cos_wgt(obj, lat_name='lat'):
     """cosine-weighted latitude"""
     return np.cos(np.deg2rad(obj[lat_name]))
 
+
+# =============================================================================
 
 def calc_anomaly(data, start, end):
     """calculate reference anomaly wrt a reference period"""
@@ -30,6 +34,78 @@ def calc_anomaly(data, start, end):
 
     return data_out
 
+
+# =============================================================================
+
+def select_first_ens(tas_anom):
+    """selects the first ensemble number for each model"""
+
+    tas_anom_one_ens = dict()
+    for scen in tas_anom.keys():
+        tas_anom_one_ens[scen] = tas_anom[scen].sel(ens_number=0)
+    
+    return tas_anom_one_ens
+
+
+# =============================================================================
+
+def calc_warming(tas_anom, period):
+    """calculate global mean warming relative to reference period"""
+
+    print("Period: {} to {}".format(*period))
+    
+    for scen in tas_anom.keys():
+        dta = tas_anom[scen]
+        
+        dta = dta.sel(year=slice(*period))
+    
+        mn = dta.mean().tas.values
+        std = dta.std().tas.values
+    
+        likely_min = mn - std * 1.64
+        likely_max = mn + std * 1.64
+    
+        print(f"{scen}: {mn:3.1f} --> {likely_min:3.1f} to {likely_max:3.1f}")
+
+
+# =============================================================================
+
+def list_ensmble_members(tas_anom):
+    """create pandas data array showing used ens members"""
+
+    all_mods = list()
+    for scen in tas_anom.keys():
+        df = tas_anom[scen].ens.to_pandas()
+        df.name = scen
+        all_mods.append(df)
+
+    df = pd.concat(all_mods, axis=1, sort=True)
+    df = df.fillna('-')
+    
+    return df
+
+
+# =============================================================================
+# sorting in human order
+
+
+def atoi(text):
+    return int(text) if text.isdigit() else text
+
+def natural_keys(text):
+    '''
+    a_list.sort(key=natural_keys) sorts in human order
+    http://nedbatchelder.com/blog/200712/human_sorting.html
+
+    Example
+    -------
+    > l = ['a10', 'a1']
+    > l.sort(key=natural_keys)
+    > l
+    ['a1', 'a10']
+
+    '''
+    return [atoi(c) for c in re.split(r'(\d+)', text)]
 
 # =============================================================================
 
@@ -60,6 +136,11 @@ class CMIP_ng:
         self.file_format = "{var}_{time}_{model}_{scen}_{ens}_{res}.nc"
 
         self._tas_all_scens = None
+
+    def __repr__(self):
+        msg = f"<CMIP_ng> Utilities to read and postprocess {self.cmip} data"
+
+        return msg
 
     def filename(self, var, time, model, scen, ens, res='native'):
         """
@@ -94,7 +175,10 @@ class CMIP_ng:
 
         fN = path.join(folder, file)
 
-        fNs = sorted(glob(fN))
+        fNs = glob(fN)
+
+        # sort such that 'r1i1' is before 'r10i1'
+        fNs.sort(key=natural_keys)
 
         if not fNs:
             raise RuntimeError('No simulations found')
@@ -161,7 +245,7 @@ class CMIP_ng:
 
             # do not compute again
             if path.isfile(fN_out):
-                msg = 'File for {scen} exists!\n{fN_out}\n -- skipping'
+                msg = 'File for {scen} exists! -- skipping \n{fN_out}'
                 print(msg.format(scen=scen, fN_out=fN_out))
                 continue
 
@@ -172,11 +256,19 @@ class CMIP_ng:
 
             # accumulate all data for one scen
             all_data = list()
+            ens_number = list()
+            model_before = ""
             for i, fN in enumerate(fNs):
                 ds = self.process_one_model(fN)
 
-                model = ds.model
-                ens = ds.ens
+                model = ds.model.values
+                if (model == model_before):
+                    ens_number.append(ens_number[i - 1] + 1)
+                else:
+                    ens_number.append(0)
+                
+                model_before = model
+
                 all_data.append(ds)
 
                 print("File {: 2d} of {:02d}".format(i + 1, len(fNs)))
@@ -184,13 +276,7 @@ class CMIP_ng:
             # concatenate the data
             ds = xr.concat(all_data, dim='model_ens')
 
-            # enumerate the ensemble members, because not always r1i1p1 is the
-            # first
-            ens_number = []
-            for model in np.unique(ds.model.values):
-                ens_number += list(range(len(ds.sel(model=model).ens)))
-
-            # add as coordinate
+            # add ens_number as coordinate
             ds =  ds.assign_coords(ens_number=('model_ens', ens_number))
 
             # we need to get rid of the multiindex, as xarray cannot save it
