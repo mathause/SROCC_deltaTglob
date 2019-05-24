@@ -1,0 +1,251 @@
+import numpy as np
+
+from glob import glob
+from os import path
+
+import xarray as xr
+
+from . import common
+from . import xarray_utils
+
+
+def cos_wgt(obj, lat_name='lat'):
+    """cosine-weighted latitude"""
+    return np.cos(np.deg2rad(obj[lat_name]))
+
+
+def calc_anomaly(data, start, end):
+
+    def _calc_anomaly(ds):
+        mean = ds.sel(year=slice(start, end)).mean('year')
+        return ds - mean
+
+    if isinstance(data, dict):
+        data_out = dict()
+        for scen in data.keys():
+            data_out[scen] = _calc_anomaly(data[scen].copy(deep=True))
+    else:
+        data_out = _calc_anomaly(data.copy(deep=True))
+
+    return data_out
+
+
+# =============================================================================
+
+class CMIP_ng:
+    """class to read and postprocess cmipX-ng data for the SROCC report
+    
+        For data access see https://data.iac.ethz.ch/atmos/
+
+    """
+    def __init__(self, folder_root, scens, cmip, skips):
+        """
+        set paths etc for cmip3_ng and cmip5_ng
+
+        Parameters
+        ----------
+        folder_root: string
+            Root of the data repository.
+        scens: list of string
+            List of all scenarios that are avaliable.
+        cmip: 'cmip3' | 'cmip5'
+            Indicates which cmip version we are using.
+        skips: list of models to skip
+            Indicate models to skip because they have errors.
+            Has the format ((scen, model, ens, reason), (...))
+
+        """
+        self.folder_root = folder_root
+        self.scens = scens
+        self.cmip = cmip
+        self.skips = skips
+
+        # format of the files (it's the same for cmip3-ng and cmip5-ng)
+        self.file_format = "{var}_{time}_{model}_{scen}_{ens}_{res}.nc"
+        
+        self._tas_all_scens = None
+
+    def filename(self, var, time, model, scen, ens, res='native'):
+        """
+        list cmip5 filenames according to criteria
+
+        Parameters
+        ----------
+        var : string
+            Variable name.
+        time : string
+            Time resolution, e.g. 'ann', 'seas'.
+        model : string
+            Models to look for, e.g. '*', 'NorESM1'
+        scen : string
+            Scenario, e.g. 'rcp85', ...
+        ens : string
+            Which ensemble members, e.g. '*', 'r1i1p?', 'r1i1p1'
+        res : string
+            Resolution, 'native' or 'g025'. Optional, default: 'g025'.
+
+        ..note::
+
+        All arguments can take wildcards.
+
+        """
+
+        folder = path.join(self.folder_root, var)
+
+        kwargs = dict(var=var, time=time, model=model, scen=scen, ens=ens,
+                      res=res)
+        file = self.file_format.format(**kwargs)
+
+        fN = path.join(folder, file)
+
+        fNs = sorted(glob(fN))
+
+        if not fNs:
+            raise RuntimeError('No simulations found')
+
+        return fNs
+
+    @staticmethod
+    def process_one_model(fN):
+        """calculate global mean annual mean for one cmip5 model
+        """
+        
+        ds = xr.open_dataset(fN)
+
+        # read model name and ensemble number
+        model = [ds.attrs['source_model']]
+        ens = [ds.attrs['source_ensemble']]
+        
+        # assign info as coordinate
+        ds = ds.assign_coords(model=model, ens=ens)
+        
+        # get cosine-weighted latitude
+        wgt = common.cos_wgt(ds)
+        
+        # compute weighted global mean
+        ds = xarray_utils.Weighted(ds, wgt).mean(('lat', 'lon'))
+
+        # convert from time index to year index
+        ds = ds.assign_coords(year=ds.year.dt.year)
+        
+        ds = ds.set_index(model_ens=('model', 'ens'))
+        
+        unique_years = np.unique(ds.year)
+        if len(ds.year) != len(unique_years):
+            msg = 'Removing duplicate years for {} {}'
+            print(msg.format(model, ens))
+
+            _, index = np.unique(ds.year, return_index=True)
+            ds = ds.isel(year=index)
+
+        return ds
+
+
+    def get_name_postprocess(self, scen):
+        """get the name for the postprocessed data"""
+
+        filename = '{cmip}_tas_ann_globmean_{scen}.nc'
+        filename = filename.format(cmip=self.cmip, scen=scen)
+        return path.join('..', 'data', self.cmip, filename)
+
+
+    def postprocess_global_mean_tas(self):
+        """postprocess and save all models
+
+            Note:
+            this only needs to be done once
+        """
+
+        # loop through all scenarios
+        for scen in self.scens:
+
+            # get the filename to save the data
+            fN_out = self.get_name_postprocess(scen)
+
+            print("=========================")
+
+            # do not compute again
+            if path.isfile(fN_out):
+                msg = 'File for {scen} exists!\n{fN_out}\n -- skipping'
+                print(msg.format(scen=scen, fN_out=fN_out))
+                continue
+
+            print(scen)
+
+            # get all filenames for one scenario
+            fNs = self.filename('tas', 'ann', '*', scen, '*')
+
+            # accumulate all data for one scen
+            all_data = list()
+            for i, fN in enumerate(fNs):
+                ds = self.process_one_model(fN)
+                
+                model = ds.model
+                ens = ds.ens
+
+                # manually added (scen, model, ens, reason) to skip
+                skip_this = False
+                for skip in self.skips:
+                    if (scen, model, ens) == skip[:3]:
+                        msg = '-- skipping {}, {}, {}, because: {}'
+                        print(msg.format(*skip))
+                        skip_this = True
+
+                if skip_this:
+                    continue
+
+                all_data.append(ds)
+                
+                print("File {: 2d} of {:02d}".format(i + 1, len(fNs)))
+
+
+            # concatenate the data
+            try:
+                ds = xr.concat(all_data, dim='model_ens')
+            except ValueError as e:
+                # return data so we can have a look
+                return all_data
+
+            
+            # enumerate the ensemble members, because not always r1i1p1 is the
+            # first
+            ens_number = []
+            for model in np.unique(ds.model.values):
+                ens_number += list(range(len(ds.sel(model=model).ens)))
+
+            # add as coordinate
+            ds =  ds.assign_coords(ens_number=('model_ens', ens_number))
+
+            # we need to get rid of the multiindex, as xarray cannot save it
+            ds = ds.reset_index('model_ens')
+            
+            # save to netcdf
+            ds.to_netcdf(fN_out, format='NETCDF4_CLASSIC')
+
+
+    def _get_tas(self, scen):
+
+        fN = self.get_name_postprocess(scen)
+
+        ds = xr.open_dataset(fN)
+        
+        # create the multiindex again
+        return ds.set_index(model_ens=('model', 'ens_number'))
+
+    @property
+    def tas_all_scens(self):
+
+        if self._tas_all_scens is None:
+            dta = dict()
+
+            for scen in self.scens:
+                dta[scen] = self._get_tas(scen)
+
+            self._tas_all_scens = dta
+        
+        return self._tas_all_scens
+    
+
+
+    
+
