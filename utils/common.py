@@ -65,7 +65,7 @@ def calc_warming(tas_anom, period):
         likely_min = mn - std * 1.64
         likely_max = mn + std * 1.64
     
-        print(f"{scen}: {mn:3.1f} --> {likely_min:3.1f} to {likely_max:3.1f}")
+        print(f"{scen}: {mn:3.2f} +- {std:3.3f} --> {likely_min:3.3f} to {likely_max:3.3f}")
 
 
 # =============================================================================
