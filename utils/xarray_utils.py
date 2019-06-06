@@ -1,3 +1,5 @@
+# add weighting functions to xarray
+
 _doc_ = """
     Reduce this DataArray's data by a weighted `{fcn}` along some dimension(s).
     Parameters
